@@ -6836,6 +6836,104 @@ add_meta_data(
 )
 
 add_meta_data(
+    Dynamic.Vehicle.DRAG_POLAR_CDC,
+    meta_data=_MetaData,
+    historical_name={'GASP': None, 'FLOPS': None, 'LEAPS1': None},
+    units='unitless',
+    desc=(
+        'Externally-supplied compressibility drag coefficient used by the '
+        'FLOPS-based ComputedAeroGroup when the option '
+        '`compressibility_drag_external=True`. When enabled, the stock '
+        'CompressibilityDrag component is skipped and this input is routed '
+        'into the drag buildup in its place (before CDC_SCALER is applied). '
+        'Default 0.0 (equivalent to disabling the internal CompressibilityDrag '
+        'contribution).'
+    ),
+    default_value=0.0,
+    multivalue=True,
+)
+
+add_meta_data(
+    Dynamic.Vehicle.DRAG_POLAR_CDC_SCALER,
+    meta_data=_MetaData,
+    historical_name={'GASP': None, 'FLOPS': None, 'LEAPS1': None},
+    units='unitless',
+    desc=(
+        'Per-node multiplicative scaler applied to the compressibility drag '
+        'component (CompressibilityDrag output) inside the FLOPS-based '
+        'TotalDrag assembly. Scales either the internal CompressibilityDrag '
+        'output or the external `DRAG_POLAR_CDC` input depending on the '
+        'ComputedAeroGroup option `compressibility_drag_external`. Defaults '
+        'to 1.0 (stock behavior).'
+    ),
+    default_value=1.0,
+    multivalue=True,
+)
+
+add_meta_data(
+    Dynamic.Vehicle.DRAG_POLAR_CDF_SCALER,
+    meta_data=_MetaData,
+    historical_name={'GASP': None, 'FLOPS': None, 'LEAPS1': None},
+    units='unitless',
+    desc=(
+        'Per-node multiplicative scaler applied to the skin-friction drag '
+        'coefficient (SkinFrictionDrag output) inside the FLOPS-based '
+        'TotalDrag assembly. Defaults to 1.0 (stock behavior). An external '
+        'subsystem may supply a vector of length num_nodes to inject '
+        'geometry- or Reynolds-dependent calibration of parasitic drag.'
+    ),
+    default_value=1.0,
+    multivalue=True,
+)
+
+add_meta_data(
+    Dynamic.Vehicle.DRAG_POLAR_CDI_SCALER,
+    meta_data=_MetaData,
+    historical_name={'GASP': None, 'FLOPS': None, 'LEAPS1': None},
+    units='unitless',
+    desc=(
+        'Per-node multiplicative scaler applied to the classical induced drag '
+        'coefficient (InducedDrag output — vortex-induced drag from lift) '
+        'inside the FLOPS-based TotalDrag assembly. Defaults to 1.0 (stock '
+        'behavior). Does NOT scale the lift-dependent pressure / wave drag '
+        '(CDP) — use DRAG_POLAR_CDP_SCALER for that component.'
+    ),
+    default_value=1.0,
+    multivalue=True,
+)
+
+add_meta_data(
+    Dynamic.Vehicle.DRAG_POLAR_CDP_SCALER,
+    meta_data=_MetaData,
+    historical_name={'GASP': None, 'FLOPS': None, 'LEAPS1': None},
+    units='unitless',
+    desc=(
+        'Per-node multiplicative scaler applied to the lift-dependent '
+        'pressure / wave drag coefficient (LiftDependentDrag output) inside '
+        'the FLOPS-based TotalDrag assembly. Defaults to 1.0 (stock behavior).'
+    ),
+    default_value=1.0,
+    multivalue=True,
+)
+
+add_meta_data(
+    Dynamic.Vehicle.DRAG_POLAR_RESIDUAL,
+    meta_data=_MetaData,
+    historical_name={'GASP': None, 'FLOPS': None, 'LEAPS1': None},
+    units='unitless',
+    desc=(
+        'Per-node additive drag-polar correction, applied in the FLOPS-based '
+        'TotalDrag assembly *after* all component scalers and FCD0 / FCDI '
+        'factors: CD_prescaled += DRAG_POLAR_RESIDUAL. Use this hook to add '
+        'a calibrated residual on top of the (optionally scaled) FLOPS '
+        'prediction without replacing any individual component. Defaults to '
+        '0.0 (stock behavior).'
+    ),
+    default_value=0.0,
+    multivalue=True,
+)
+
+add_meta_data(
     Dynamic.Vehicle.LIFT,
     meta_data=_MetaData,
     historical_name={'GASP': None, 'FLOPS': None, 'LEAPS1': None},

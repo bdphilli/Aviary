@@ -115,8 +115,6 @@ class TotalDragTest(unittest.TestCase):
         mission_keys = (
             Dynamic.Atmosphere.DYNAMIC_PRESSURE,
             Dynamic.Atmosphere.MACH,
-            'CD0',
-            'CDI',
         )
 
         # drag = 4 digits precision
@@ -143,6 +141,18 @@ class TotalDragTest(unittest.TestCase):
         for key in mission_keys:
             val, units = mission_data.get_item(key)
             prob.set_val(key, val, units)
+
+        # The legacy mission test data only exposes the aggregated CD0 and CDI
+        # sums, not the four FLOPS components separately. Stuff the full CD0
+        # value into CDF (leaving CDC=0) and the full CDI into CDP (leaving
+        # CDI_IND=0) — with default scalers all at 1.0 this yields the same
+        # CD_prescaled as the legacy formula FCD0*CD0 + FCDI*CDI.
+        CD0_val, CD0_units = mission_data.get_item('CD0')
+        CDI_val, CDI_units = mission_data.get_item('CDI')
+        prob.set_val('CDF', CD0_val, CD0_units)
+        prob.set_val('CDC', np.zeros(nn), 'unitless')
+        prob.set_val('CDP', CDI_val, CDI_units)
+        prob.set_val('CDI_IND', np.zeros(nn), 'unitless')
 
         prob.run_model()
 
@@ -187,10 +197,13 @@ class ComputedDragTest(unittest.TestCase):
 
         prob.setup(force_alloc_complex=True)
 
-        prob.set_val('skin_friction_drag_coeff', 0.01 * cdf)
-        prob.set_val('pressure_drag_coeff', 0.01 * cdp)
-        prob.set_val('compress_drag_coeff', 0.01 * cdc)
-        prob.set_val('induced_drag_coeff', 0.01 * cdi)
+        # Four FLOPS drag components, now passed individually (no longer
+        # summed inside ComputedDrag). Classical induced drag input is
+        # named CDI_IND to avoid collision with the legacy CDI sum output.
+        prob.set_val('CDF', 0.01 * cdf)
+        prob.set_val('CDP', 0.01 * cdp)
+        prob.set_val('CDC', 0.01 * cdc)
+        prob.set_val('CDI_IND', 0.01 * cdi)
         prob.set_val(Dynamic.Atmosphere.MACH, M)
 
         prob.set_val(Aircraft.Design.ZERO_LIFT_DRAG_COEFF_FACTOR, 0.7)
@@ -310,6 +323,128 @@ mission_simple_CD[key] = np.array([0.02296, 0.01861, 0.01704])
 mission_simple_drag[key] = np.array([25966.645302, 29136.570888, 33660.241019])
 mission_total_CD[key] = np.array([0.0229615, 0.0186105, 0.0170335])
 mission_total_drag[key] = np.array([25968.341729, 29137.353709, 33647.401139])
+
+
+class PerNodeDragPolarScalerTest(unittest.TestCase):
+    """Tests for the four per-node drag-polar calibration scalers added to
+    TotalDrag — one multiplicative scaler per FLOPS drag component:
+
+        CDF_SCALER → skin friction       (SkinFrictionDrag output)
+        CDC_SCALER → compressibility     (CompressibilityDrag output)
+        CDP_SCALER → lift-dependent wave (LiftDependentDrag / PressureDrag)
+        CDI_SCALER → classical induced   (InducedDrag output)
+
+    All default to 1.0 per node, preserving stock behavior. External subsystems
+    may override them to inject geometry-, Mach-, or Reynolds-dependent
+    calibration of any component independently.
+    """
+
+    def _build(self, nn):
+        prob = om.Problem()
+        prob.model.add_subsystem('total_drag', TotalDrag(num_nodes=nn), promotes=['*'])
+        prob.setup(force_alloc_complex=True)
+        # Representative non-trivial per-component inputs.
+        prob.set_val('CDF', 0.018 * np.ones(nn) + 0.0005 * np.arange(nn))
+        prob.set_val('CDC', 0.002 * np.ones(nn) + 0.0003 * np.arange(nn))
+        prob.set_val('CDP', 0.004 * np.ones(nn) + 0.0002 * np.arange(nn))
+        prob.set_val('CDI_IND', 0.008 * np.ones(nn) + 0.0004 * np.arange(nn))
+        prob.set_val(Aircraft.Design.LIFT_DEPENDENT_DRAG_COEFF_FACTOR, 1.0)
+        prob.set_val(Aircraft.Design.ZERO_LIFT_DRAG_COEFF_FACTOR, 1.0)
+        prob.set_val(Dynamic.Atmosphere.MACH, 0.3 + 0.1 * np.arange(nn))
+        prob.set_val(Dynamic.Atmosphere.DYNAMIC_PRESSURE, np.linspace(1e4, 1.5e4, nn))
+        prob.set_val(Aircraft.Wing.AREA, 130.0)
+        return prob
+
+    def _expected(self, prob, cdf_s=1.0, cdc_s=1.0, cdp_s=1.0, cdi_s=1.0):
+        CDF = prob.get_val('CDF')
+        CDC = prob.get_val('CDC')
+        CDP = prob.get_val('CDP')
+        CDI_IND = prob.get_val('CDI_IND')
+        FCD0 = prob.get_val(Aircraft.Design.ZERO_LIFT_DRAG_COEFF_FACTOR)[0]
+        FCDI = prob.get_val(Aircraft.Design.LIFT_DEPENDENT_DRAG_COEFF_FACTOR)[0]
+        return FCD0 * (CDF * cdf_s + CDC * cdc_s) + FCDI * (CDP * cdp_s + CDI_IND * cdi_s)
+
+    def test_default_scalers_match_stock_formula(self):
+        """All scalers at 1.0 gives CD_prescaled = FCD0*(CDF+CDC) + FCDI*(CDP+CDI)."""
+        prob = self._build(nn=4)
+        prob.run_model()
+        assert_near_equal(prob.get_val('CD_prescaled'), self._expected(prob), 1e-12)
+
+    def test_cdf_scaler_doubles_skin_friction(self):
+        prob = self._build(nn=4)
+        prob.set_val(Dynamic.Vehicle.DRAG_POLAR_CDF_SCALER, 2.0 * np.ones(4))
+        prob.run_model()
+        assert_near_equal(prob.get_val('CD_prescaled'), self._expected(prob, cdf_s=2.0), 1e-12)
+
+    def test_cdc_scaler_doubles_compressibility(self):
+        prob = self._build(nn=4)
+        prob.set_val(Dynamic.Vehicle.DRAG_POLAR_CDC_SCALER, 2.0 * np.ones(4))
+        prob.run_model()
+        assert_near_equal(prob.get_val('CD_prescaled'), self._expected(prob, cdc_s=2.0), 1e-12)
+
+    def test_cdp_scaler_doubles_pressure(self):
+        prob = self._build(nn=4)
+        prob.set_val(Dynamic.Vehicle.DRAG_POLAR_CDP_SCALER, 2.0 * np.ones(4))
+        prob.run_model()
+        assert_near_equal(prob.get_val('CD_prescaled'), self._expected(prob, cdp_s=2.0), 1e-12)
+
+    def test_cdi_scaler_doubles_induced(self):
+        prob = self._build(nn=4)
+        prob.set_val(Dynamic.Vehicle.DRAG_POLAR_CDI_SCALER, 2.0 * np.ones(4))
+        prob.run_model()
+        assert_near_equal(prob.get_val('CD_prescaled'), self._expected(prob, cdi_s=2.0), 1e-12)
+
+    def test_per_node_non_uniform_scalers(self):
+        """Each scaler varies per node — confirms vector (not broadcast) behavior."""
+        prob = self._build(nn=3)
+        cdf_s = np.array([1.0, 2.0, 0.5])
+        cdc_s = np.array([0.9, 1.1, 1.3])
+        cdp_s = np.array([1.2, 0.8, 1.5])
+        cdi_s = np.array([0.95, 1.05, 1.10])
+        prob.set_val(Dynamic.Vehicle.DRAG_POLAR_CDF_SCALER, cdf_s)
+        prob.set_val(Dynamic.Vehicle.DRAG_POLAR_CDC_SCALER, cdc_s)
+        prob.set_val(Dynamic.Vehicle.DRAG_POLAR_CDP_SCALER, cdp_s)
+        prob.set_val(Dynamic.Vehicle.DRAG_POLAR_CDI_SCALER, cdi_s)
+        prob.run_model()
+        assert_near_equal(
+            prob.get_val('CD_prescaled'), self._expected(prob, cdf_s, cdc_s, cdp_s, cdi_s), 1e-12
+        )
+
+    def test_partials_clean_with_all_scalers_set(self):
+        """Analytic partials remain exact under complex step when every scaler is active."""
+        prob = self._build(nn=4)
+        prob.set_val(Dynamic.Vehicle.DRAG_POLAR_CDF_SCALER, np.array([1.1, 0.9, 1.05, 0.95]))
+        prob.set_val(Dynamic.Vehicle.DRAG_POLAR_CDC_SCALER, np.array([1.2, 0.8, 1.5, 0.9]))
+        prob.set_val(Dynamic.Vehicle.DRAG_POLAR_CDP_SCALER, np.array([0.9, 1.1, 1.0, 1.3]))
+        prob.set_val(Dynamic.Vehicle.DRAG_POLAR_CDI_SCALER, np.array([1.05, 0.95, 1.10, 0.90]))
+        prob.run_model()
+        data = prob.check_partials(out_stream=None, method='cs')
+        assert_check_partials(data, atol=2.5e-10, rtol=1e-12)
+
+    def test_residual_is_additive_default_zero(self):
+        """DRAG_POLAR_RESIDUAL defaults to 0 and has no effect when unused."""
+        prob = self._build(nn=4)
+        prob.run_model()
+        # Default (residual=0) matches the 4-scaler formula exactly.
+        assert_near_equal(prob.get_val('CD_prescaled'), self._expected(prob), 1e-12)
+
+    def test_residual_adds_directly_to_cd_prescaled(self):
+        """When DRAG_POLAR_RESIDUAL is set, it adds as-is on top of the scaled FLOPS prediction
+        (no multiplication by FCD0/FCDI or any component scaler)."""
+        prob = self._build(nn=4)
+        residual = np.array([0.001, -0.0005, 0.0015, 0.0002])
+        prob.set_val(Dynamic.Vehicle.DRAG_POLAR_RESIDUAL, residual)
+        prob.run_model()
+        expected = self._expected(prob) + residual
+        assert_near_equal(prob.get_val('CD_prescaled'), expected, 1e-12)
+
+    def test_partials_clean_with_residual_set(self):
+        """Additive residual partials pass complex step."""
+        prob = self._build(nn=4)
+        prob.set_val(Dynamic.Vehicle.DRAG_POLAR_RESIDUAL, np.array([0.0, 0.001, -0.0005, 0.002]))
+        prob.run_model()
+        data = prob.check_partials(out_stream=None, method='cs')
+        assert_check_partials(data, atol=2.5e-10, rtol=1e-12)
 
 
 if __name__ == '__main__':

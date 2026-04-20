@@ -607,6 +607,21 @@ class Dynamic:
         BATTERY_STATE_OF_CHARGE = 'battery_state_of_charge'
         CUMULATIVE_ELECTRIC_ENERGY_USED = 'cumulative_electric_energy_used'
         DRAG = 'drag'
+        # Per-node drag-polar calibration hooks (see TotalDrag in
+        # subsystems/aerodynamics/flops_based/drag.py). One multiplicative
+        # scaler per FLOPS drag component, plus an external additive override
+        # for the compressibility drag coefficient. Defaults are chosen so
+        # unused hooks leave stock Aviary behavior arithmetically unchanged.
+        DRAG_POLAR_CDC = 'drag_polar_cdc'
+        DRAG_POLAR_CDC_SCALER = 'drag_polar_cdc_scaler'
+        DRAG_POLAR_CDF_SCALER = 'drag_polar_cdf_scaler'
+        DRAG_POLAR_CDI_SCALER = 'drag_polar_cdi_scaler'
+        DRAG_POLAR_CDP_SCALER = 'drag_polar_cdp_scaler'
+        # Pure additive drag-polar correction. Added to CD_prescaled *after*
+        # all component scalers and FCD0/FCDI factors. Default 0.0; external
+        # subsystems may supply a calibrated residual that sits on top of the
+        # (optionally scaled) FLOPS prediction.
+        DRAG_POLAR_RESIDUAL = 'drag_polar_residual'
         LIFT = 'lift'
         MASS = 'mass'
         MASS_RATE = 'mass_rate'

@@ -160,29 +160,63 @@ class TotalDrag(om.Group):
         FCDI_desc = _meta_data[Aircraft.Design.LIFT_DEPENDENT_DRAG_COEFF_FACTOR]['desc']
         FCD0_desc = _meta_data[Aircraft.Design.ZERO_LIFT_DRAG_COEFF_FACTOR]['desc']
 
+        CDF_SCALER_desc = _meta_data[Dynamic.Vehicle.DRAG_POLAR_CDF_SCALER]['desc']
+        CDC_SCALER_desc = _meta_data[Dynamic.Vehicle.DRAG_POLAR_CDC_SCALER]['desc']
+        CDP_SCALER_desc = _meta_data[Dynamic.Vehicle.DRAG_POLAR_CDP_SCALER]['desc']
+        CDI_SCALER_desc = _meta_data[Dynamic.Vehicle.DRAG_POLAR_CDI_SCALER]['desc']
+        CD_RESIDUAL_desc = _meta_data[Dynamic.Vehicle.DRAG_POLAR_RESIDUAL]['desc']
+
         kwargs = {
-            'CDI': dict(
+            # Four FLOPS drag components (split from the former CD0 / CDI sums).
+            # The classical-induced-drag input is named `CDI_IND` (not plain
+            # `CDI`) to avoid conflicting with the legacy lumped `CDI` output
+            # that `ComputedDrag` still emits for backward compatibility.
+            'CDF': dict(val=np.ones(nn), units='unitless', desc='skin-friction drag coefficient'),
+            'CDC': dict(val=np.ones(nn), units='unitless', desc='compressibility drag coefficient'),
+            'CDP': dict(
                 val=np.ones(nn),
                 units='unitless',
-                desc='lift-dependent drag coefficient,'
-                ' including contributions from pressure drag coefficient',
+                desc='lift-dependent pressure (wave) drag coefficient',
             ),
-            'CD0': dict(
-                val=np.ones(nn), units='unitless', desc='lift-independent drag coefficient'
+            'CDI_IND': dict(
+                val=np.ones(nn),
+                units='unitless',
+                desc='classical induced drag coefficient (from vortex lift)',
             ),
+            # Legacy scalar group factors.
             'FCDI': dict(val=1.0, units='unitless', desc=FCDI_desc),
             'FCD0': dict(val=1.0, units='unitless', desc=FCD0_desc),
+            # Per-node component scalers. Default 1.0 preserves stock output.
+            'CDF_SCALER': dict(val=np.ones(nn), units='unitless', desc=CDF_SCALER_desc),
+            'CDC_SCALER': dict(val=np.ones(nn), units='unitless', desc=CDC_SCALER_desc),
+            'CDP_SCALER': dict(val=np.ones(nn), units='unitless', desc=CDP_SCALER_desc),
+            'CDI_SCALER': dict(val=np.ones(nn), units='unitless', desc=CDI_SCALER_desc),
+            # Additive residual applied on top of the whole (scaled) FLOPS
+            # prediction. Default 0.0 preserves stock output.
+            'CD_RESIDUAL': dict(val=np.zeros(nn), units='unitless', desc=CD_RESIDUAL_desc),
             'CD_prescaled': dict(val=np.ones(nn), units='unitless', desc='total drag coefficient'),
         }
 
         total_drag_comp = self.add_subsystem(
             'total_drag_coeff',
-            om.ExecComp('CD_prescaled = CDI * FCDI + CD0 * FCD0', **kwargs),
+            om.ExecComp(
+                'CD_prescaled = FCD0 * (CDF * CDF_SCALER + CDC * CDC_SCALER)'
+                '             + FCDI * (CDP * CDP_SCALER + CDI_IND * CDI_SCALER)'
+                '             + CD_RESIDUAL',
+                **kwargs,
+            ),
             promotes_inputs=[
-                'CDI',
-                'CD0',
+                'CDF',
+                'CDC',
+                'CDP',
+                'CDI_IND',
                 ('FCDI', Aircraft.Design.LIFT_DEPENDENT_DRAG_COEFF_FACTOR),
                 ('FCD0', Aircraft.Design.ZERO_LIFT_DRAG_COEFF_FACTOR),
+                ('CDF_SCALER', Dynamic.Vehicle.DRAG_POLAR_CDF_SCALER),
+                ('CDC_SCALER', Dynamic.Vehicle.DRAG_POLAR_CDC_SCALER),
+                ('CDP_SCALER', Dynamic.Vehicle.DRAG_POLAR_CDP_SCALER),
+                ('CDI_SCALER', Dynamic.Vehicle.DRAG_POLAR_CDI_SCALER),
+                ('CD_RESIDUAL', Dynamic.Vehicle.DRAG_POLAR_RESIDUAL),
             ],
             promotes_outputs=['*'],
         )

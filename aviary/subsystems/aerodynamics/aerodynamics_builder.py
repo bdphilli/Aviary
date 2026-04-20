@@ -261,7 +261,22 @@ class CoreAerodynamicsBuilder(AerodynamicsBuilder):
                     Dynamic.Vehicle.MASS,
                     'aircraft:*',
                     'mission:*',
+                    # Per-node drag-polar component scalers. Always promoted
+                    # so external subsystems can supply them; default 1.0
+                    # preserves stock behavior otherwise.
+                    Dynamic.Vehicle.DRAG_POLAR_CDF_SCALER,
+                    Dynamic.Vehicle.DRAG_POLAR_CDC_SCALER,
+                    Dynamic.Vehicle.DRAG_POLAR_CDP_SCALER,
+                    Dynamic.Vehicle.DRAG_POLAR_CDI_SCALER,
+                    # Additive drag-polar residual. Default 0.0 preserves
+                    # stock behavior; externally-supplied values are added
+                    # on top of the (scaled) FLOPS prediction.
+                    Dynamic.Vehicle.DRAG_POLAR_RESIDUAL,
                 ]
+                # DRAG_POLAR_CDC only exists as an ComputedAeroGroup input
+                # when the stock CompressibilityDrag is skipped.
+                if kwargs.get('compressibility_drag_external', False):
+                    promotes.append(Dynamic.Vehicle.DRAG_POLAR_CDC)
 
             elif method == 'low_speed':
                 promotes = [
@@ -335,6 +350,13 @@ class CoreAerodynamicsBuilder(AerodynamicsBuilder):
 
         if self.code_origin is FLOPS:
             promotes = [Dynamic.Vehicle.DRAG, Dynamic.Vehicle.LIFT]
+            # `cl` exists on 'computed' aero (from LiftEqualsWeight); promote
+            # it so external subsystems (e.g. CFD-calibration builders) can
+            # consume the canonical L=W value. Other FLOPS aero methods
+            # (takeoff, tabular, low_speed) don't produce `cl`, so the
+            # promote is restricted to the 'computed' path.
+            if method == 'computed' or method is None:
+                promotes = promotes + ['cl']
 
         elif self.code_origin is GASP:
             # GASP default is 'cruise'
@@ -494,7 +516,18 @@ class CoreAerodynamicsBuilder(AerodynamicsBuilder):
                         params[Aircraft.Design.LIFT_DEPENDENT_DRAG_POLAR] = opts
 
             if method == 'computed':
+                # When the internal CompressibilityDrag component is skipped
+                # via `compressibility_drag_external=True`, its exclusive
+                # inputs are no longer consumed by any ODE subsystem; Dymos
+                # errors out on parameters with no target. Drop those
+                # specific inputs from the parameter list in that case.
+                drop = set()
+                if kwargs.get('compressibility_drag_external', False):
+                    drop.update(_COMPRESSIBILITY_DRAG_ONLY_INPUTS)
+
                 for var in COMPUTED_CORE_INPUTS:
+                    if var in drop:
+                        continue
                     meta = _MetaData[var]
 
                     val = meta['default_value']
@@ -685,6 +718,19 @@ class CoreAerodynamicsBuilder(AerodynamicsBuilder):
         elif self.code_origin is GASP:
             # GASP aero report goes here
             return
+
+
+# Parameters inside COMPUTED_CORE_INPUTS that are only consumed by
+# ComputedAeroGroup's internal CompressibilityDrag component. When
+# `compressibility_drag_external=True` is set, CompressibilityDrag is skipped
+# and these parameters no longer have a target in the ODE, so they must be
+# filtered out of the get_parameters list.
+_COMPRESSIBILITY_DRAG_ONLY_INPUTS = {
+    Aircraft.Design.BASE_AREA,
+    Aircraft.Fuselage.CROSS_SECTION,
+    Aircraft.Fuselage.DIAMETER_TO_WING_SPAN,
+    Aircraft.Fuselage.LENGTH_TO_DIAMETER,
+}
 
 
 # Parameters for drag computation.

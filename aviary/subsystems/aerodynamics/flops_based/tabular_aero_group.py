@@ -173,6 +173,13 @@ class TabularAeroGroup(om.Group):
             promotes_outputs=['*'],
         )
 
+        # Tabular aero provides two lumped polars (CD0 = zero-lift,
+        # CDI = lift-dependent). Map them onto two of TotalDrag's four
+        # component inputs: CDF gets the zero-lift polar, CDI_IND gets the
+        # lift-dependent polar. The unused CDC and CDP inputs fall back to
+        # zero defaults below. Only CDF_SCALER and CDI_SCALER are meaningful
+        # under tabular aero; CDC_SCALER and CDP_SCALER operate on zero
+        # inputs and have no effect.
         self.add_subsystem(
             Dynamic.Vehicle.DRAG,
             Drag(num_nodes=nn),
@@ -182,13 +189,17 @@ class TabularAeroGroup(om.Group):
                 Aircraft.Wing.AREA,
                 Aircraft.Design.SUBSONIC_DRAG_COEFF_FACTOR,
                 Aircraft.Design.SUPERSONIC_DRAG_COEFF_FACTOR,
-                ('CDI', 'lift_dependent_drag_coefficient'),
-                ('CD0', 'zero_lift_drag_coefficient'),
+                ('CDF', 'zero_lift_drag_coefficient'),
+                ('CDI_IND', 'lift_dependent_drag_coefficient'),
                 Dynamic.Atmosphere.MACH,
                 Dynamic.Atmosphere.DYNAMIC_PRESSURE,
             ],
             promotes_outputs=['CD', Dynamic.Vehicle.DRAG],
         )
+        # Force the two unused component inputs to zero so they don't
+        # contribute bogus drag from TotalDrag's placeholder defaults.
+        self.set_input_defaults(f'{Dynamic.Vehicle.DRAG}.CDC', val=np.zeros(nn), units='unitless')
+        self.set_input_defaults(f'{Dynamic.Vehicle.DRAG}.CDP', val=np.zeros(nn), units='unitless')
 
 
 class _DynamicPressure(om.ExplicitComponent):

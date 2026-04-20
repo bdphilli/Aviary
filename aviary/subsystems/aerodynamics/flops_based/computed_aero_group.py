@@ -24,6 +24,18 @@ class ComputedAeroGroup(om.Group):
             'num_nodes', default=1, types=int, desc='Number of nodes along mission segment'
         )
         self.options.declare('gamma', default=1.4, desc='Ratio of specific heats for air.')
+        self.options.declare(
+            'compressibility_drag_external',
+            default=False,
+            types=bool,
+            desc=(
+                'If True, skip the stock CompressibilityDrag component and read '
+                'the compressibility drag coefficient from '
+                'Dynamic.Vehicle.DRAG_POLAR_CDC (supplied by an external '
+                'subsystem). Default behavior (False) matches stock Aviary '
+                'exactly.'
+            ),
+        )
 
     def setup(self):
         num_nodes = self.options['num_nodes']
@@ -99,25 +111,36 @@ class ComputedAeroGroup(om.Group):
             ],
         )
 
-        comp = CompressibilityDrag(num_nodes=num_nodes)
-        self.add_subsystem(
-            'CompressibilityDrag',
-            comp,
-            promotes_inputs=[
-                Dynamic.Atmosphere.MACH,
-                Mission.Design.MACH,
-                Aircraft.Design.BASE_AREA,
-                Aircraft.Wing.AREA,
-                Aircraft.Wing.ASPECT_RATIO,
-                Aircraft.Wing.MAX_CAMBER_AT_70_SEMISPAN,
-                Aircraft.Wing.SWEEP,
-                Aircraft.Wing.TAPER_RATIO,
-                Aircraft.Wing.THICKNESS_TO_CHORD,
-                Aircraft.Fuselage.CROSS_SECTION,
-                Aircraft.Fuselage.DIAMETER_TO_WING_SPAN,
-                Aircraft.Fuselage.LENGTH_TO_DIAMETER,
-            ],
-        )
+        if not self.options['compressibility_drag_external']:
+            comp = CompressibilityDrag(num_nodes=num_nodes)
+            self.add_subsystem(
+                'CompressibilityDrag',
+                comp,
+                promotes_inputs=[
+                    Dynamic.Atmosphere.MACH,
+                    Mission.Design.MACH,
+                    Aircraft.Design.BASE_AREA,
+                    Aircraft.Wing.AREA,
+                    Aircraft.Wing.ASPECT_RATIO,
+                    Aircraft.Wing.MAX_CAMBER_AT_70_SEMISPAN,
+                    Aircraft.Wing.SWEEP,
+                    Aircraft.Wing.TAPER_RATIO,
+                    Aircraft.Wing.THICKNESS_TO_CHORD,
+                    Aircraft.Fuselage.CROSS_SECTION,
+                    Aircraft.Fuselage.DIAMETER_TO_WING_SPAN,
+                    Aircraft.Fuselage.LENGTH_TO_DIAMETER,
+                ],
+            )
+        else:
+            import warnings
+
+            warnings.warn(
+                'ComputedAeroGroup: compressibility_drag_external=True. The '
+                'stock CompressibilityDrag component has been skipped; '
+                f'{Dynamic.Vehicle.DRAG_POLAR_CDC!r} must be supplied by an '
+                'external subsystem.',
+                stacklevel=2,
+            )
 
         comp = SkinFriction(num_nodes=num_nodes)
         self.add_subsystem(
@@ -147,20 +170,38 @@ class ComputedAeroGroup(om.Group):
             ],
         )
 
+        drag_promotes_inputs = [
+            Dynamic.Atmosphere.DYNAMIC_PRESSURE,
+            Dynamic.Atmosphere.MACH,
+            Aircraft.Wing.AREA,
+            Aircraft.Design.ZERO_LIFT_DRAG_COEFF_FACTOR,
+            Aircraft.Design.LIFT_DEPENDENT_DRAG_COEFF_FACTOR,
+            Aircraft.Design.SUBSONIC_DRAG_COEFF_FACTOR,
+            Aircraft.Design.SUPERSONIC_DRAG_COEFF_FACTOR,
+            # Per-node drag-polar calibration scalers (default 1.0).
+            Dynamic.Vehicle.DRAG_POLAR_CDF_SCALER,
+            Dynamic.Vehicle.DRAG_POLAR_CDC_SCALER,
+            Dynamic.Vehicle.DRAG_POLAR_CDP_SCALER,
+            Dynamic.Vehicle.DRAG_POLAR_CDI_SCALER,
+            # Additive residual (default 0.0, applied on top of scaled FLOPS).
+            Dynamic.Vehicle.DRAG_POLAR_RESIDUAL,
+        ]
+        if self.options['compressibility_drag_external']:
+            # Route external compressibility drag directly into the drag
+            # assembly via an aliased promotion. Replaces the stock
+            # CompressibilityDrag->Drag connection below. The aliased value
+            # is still multiplied by CDC_SCALER inside TotalDrag.
+            drag_promotes_inputs.append(('CDC', Dynamic.Vehicle.DRAG_POLAR_CDC))
+
         comp = ComputedDrag(num_nodes=num_nodes)
         self.add_subsystem(
             'Drag',
             comp,
-            promotes_inputs=[
-                Dynamic.Atmosphere.DYNAMIC_PRESSURE,
-                Dynamic.Atmosphere.MACH,
-                Aircraft.Wing.AREA,
-                Aircraft.Design.ZERO_LIFT_DRAG_COEFF_FACTOR,
-                Aircraft.Design.LIFT_DEPENDENT_DRAG_COEFF_FACTOR,
-                Aircraft.Design.SUBSONIC_DRAG_COEFF_FACTOR,
-                Aircraft.Design.SUPERSONIC_DRAG_COEFF_FACTOR,
-            ],
-            promotes_outputs=['CDI', 'CD0', 'CD', Dynamic.Vehicle.DRAG],
+            promotes_inputs=drag_promotes_inputs,
+            # `CDI` and `CD0` are diagnostic sum outputs from ComputedDrag,
+            # kept for backward compatibility with legacy consumers (tabular
+            # polar generation, result reporting).
+            promotes_outputs=['CD', 'CD0', 'CDI', Dynamic.Vehicle.DRAG],
         )
 
         buf = BuffetLift(num_nodes=num_nodes)
@@ -177,39 +218,33 @@ class ComputedAeroGroup(om.Group):
             ],
         )
 
-        self.connect('PressureDrag.CD', 'Drag.pressure_drag_coeff')
-        self.connect('InducedDrag.induced_drag_coeff', 'Drag.induced_drag_coeff')
-        self.connect('CompressibilityDrag.compress_drag_coeff', 'Drag.compress_drag_coeff')
-        self.connect('SkinFrictionDrag.skin_friction_drag_coeff', 'Drag.skin_friction_drag_coeff')
+        # Each FLOPS drag component feeds its own input in ComputedDrag /
+        # TotalDrag (four individually-scalable legs). The CDC feed is
+        # suppressed when the external-override option is set; in that case
+        # `Drag.CDC` is promoted from `Dynamic.Vehicle.DRAG_POLAR_CDC` instead
+        # (aliased in the Drag subsystem's promotes_inputs above).
+        self.connect('SkinFrictionDrag.skin_friction_drag_coeff', 'Drag.CDF')
+        if not self.options['compressibility_drag_external']:
+            self.connect('CompressibilityDrag.compress_drag_coeff', 'Drag.CDC')
+        self.connect('PressureDrag.CD', 'Drag.CDP')
+        self.connect('InducedDrag.induced_drag_coeff', 'Drag.CDI_IND')
 
         self.set_input_defaults(Aircraft.Wing.AREA, units='ft**2', val=0.0)
 
 
 class ComputedDrag(om.Group):
-    """FLOPS-based computed drag group."""
+    """FLOPS-based computed drag group.
+
+    Receives the four FLOPS drag component outputs (CDF, CDC, CDP, CDI)
+    individually as promoted inputs and passes them to TotalDrag, which
+    scales each component independently before forming the total CD.
+    """
 
     def initialize(self):
         self.options.declare('num_nodes', types=int)
 
     def setup(self):
         nn = self.options['num_nodes']
-
-        self._setup_drag_coeff(
-            'CDI',
-            input0='pressure_drag_coeff',
-            input1='induced_drag_coeff',
-            output='CDI',
-            desc='lift-dependent drag coefficient,'
-            ' including contributions from pressure drag coefficient',
-        )
-
-        self._setup_drag_coeff(
-            'CD0',
-            input0='skin_friction_drag_coeff',
-            input1='compress_drag_coeff',
-            output='CD0',
-            desc='zero-lift drag coefficient',
-        )
 
         self.add_subsystem(
             Dynamic.Vehicle.DRAG,
@@ -220,12 +255,39 @@ class ComputedDrag(om.Group):
                 Aircraft.Wing.AREA,
                 Aircraft.Design.SUBSONIC_DRAG_COEFF_FACTOR,
                 Aircraft.Design.SUPERSONIC_DRAG_COEFF_FACTOR,
-                'CDI',
-                'CD0',
+                # Per-component drag coefficients (wired by ComputedAeroGroup).
+                'CDF',
+                'CDC',
+                'CDP',
+                'CDI_IND',
                 Dynamic.Atmosphere.MACH,
                 Dynamic.Atmosphere.DYNAMIC_PRESSURE,
+                # Per-node drag-polar calibration hooks (default 1.0 each).
+                Dynamic.Vehicle.DRAG_POLAR_CDF_SCALER,
+                Dynamic.Vehicle.DRAG_POLAR_CDC_SCALER,
+                Dynamic.Vehicle.DRAG_POLAR_CDP_SCALER,
+                Dynamic.Vehicle.DRAG_POLAR_CDI_SCALER,
+                # Additive residual, default 0.0.
+                Dynamic.Vehicle.DRAG_POLAR_RESIDUAL,
             ],
             promotes_outputs=['CD', Dynamic.Vehicle.DRAG],
+        )
+
+        # Diagnostic sum outputs for backward compatibility with legacy
+        # consumers (tabular-polar generation from MissionDragTest, result
+        # reporting, etc.). These do NOT feed the drag buildup — TotalDrag
+        # consumes the four components directly — they're purely reporting
+        # helpers.
+        sum_args = {'val': np.ones(nn), 'units': 'unitless'}
+        self.add_subsystem(
+            'CD0_sum',
+            om.ExecComp('CD0 = CDF + CDC', CDF=sum_args, CDC=sum_args, CD0=sum_args),
+            promotes=['*'],
+        )
+        self.add_subsystem(
+            'CDI_sum',
+            om.ExecComp('CDI = CDP + CDI_IND', CDP=sum_args, CDI_IND=sum_args, CDI=sum_args),
+            promotes=['*'],
         )
 
         self.set_input_defaults(Aircraft.Wing.AREA, 1.0, 'ft**2')

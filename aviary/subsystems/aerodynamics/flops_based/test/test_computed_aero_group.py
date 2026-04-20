@@ -472,6 +472,106 @@ class MissionDragTest(unittest.TestCase):
         assert_near_equal(CD[:134], data[:134], 0.005)
 
 
+def _promoted_input_names(subsystem):
+    """Return the list of promoted-input specs from a subsystem's OpenMDAO
+    internals. Each entry is either a plain name or an (alias, name) tuple."""
+    # OpenMDAO stores promotion specs on the subsystem as `_var_promotes`,
+    # with inputs under the 'input' key. Entries are tuples of
+    # (spec, <anything>), where `spec` is either a string (simple promotion)
+    # or a (local_name, alias) pair (aliased promotion).
+    specs = subsystem._var_promotes.get('input', [])
+    return [s[0] for s in specs]
+
+
+class CompressibilityDragExternalOptionTest(unittest.TestCase):
+    """Structural tests for the `compressibility_drag_external` option on
+    `ComputedAeroGroup`. When True, the built-in `CompressibilityDrag`
+    subsystem is skipped and `Dynamic.Vehicle.DRAG_POLAR_CDC` is routed
+    directly into the drag buildup (as the `compress_drag_coeff` input to
+    `Drag`). Numerical end-to-end behavior of the default path is covered by
+    `MissionDragTest` above; this class verifies the toggle wiring.
+    """
+
+    def _build_group(self, external):
+        from aviary.subsystems.aerodynamics.flops_based.computed_aero_group import (
+            ComputedAeroGroup,
+        )
+
+        group = ComputedAeroGroup(num_nodes=2, compressibility_drag_external=external)
+        # Call the group's `setup` directly to populate the static subsystem
+        # registry without needing the full Aviary-problem configuration (Mux
+        # requires engine/tail metadata that's supplied only in the mission
+        # context). Inspection of `_static_subsystems_allprocs` after `setup`
+        # is sufficient to verify the option toggles the expected wiring.
+        group.setup()
+        return group
+
+    def test_default_retains_compressibility_drag(self):
+        group = self._build_group(external=False)
+        subs = list(group._static_subsystems_allprocs)
+        self.assertIn('CompressibilityDrag', subs)
+
+    def test_external_skips_compressibility_drag(self):
+        group = self._build_group(external=True)
+        subs = list(group._static_subsystems_allprocs)
+        self.assertNotIn('CompressibilityDrag', subs)
+
+    def test_external_aliases_drag_polar_cdc_to_compress_drag_coeff(self):
+        """Drag subsystem's `CDC` input must be promoted from
+        `Dynamic.Vehicle.DRAG_POLAR_CDC` in external mode (routed there
+        instead of coming from the skipped CompressibilityDrag subsystem)."""
+        group = self._build_group(external=True)
+        drag_sys = group._static_subsystems_allprocs['Drag'].system
+        promotes = _promoted_input_names(drag_sys)
+        expected = ('CDC', Dynamic.Vehicle.DRAG_POLAR_CDC)
+        self.assertIn(
+            expected,
+            promotes,
+            f'expected {expected!r} in Drag promoted inputs; got {promotes!r}',
+        )
+
+    def test_default_does_not_alias_cdc(self):
+        """Without the option, the `CDC` input must not be aliased (it's
+        wired via an explicit `self.connect(...)` from CompressibilityDrag)."""
+        group = self._build_group(external=False)
+        drag_sys = group._static_subsystems_allprocs['Drag'].system
+        promotes = _promoted_input_names(drag_sys)
+        aliased = [p for p in promotes if isinstance(p, tuple) and p[0] == 'CDC']
+        self.assertEqual(
+            aliased,
+            [],
+            f'`CDC` should not be promoted in default mode; found: {aliased!r}',
+        )
+
+
+class DragPolarScalerPromotionTest(unittest.TestCase):
+    """Verifies that the four per-node drag-polar component scalers *and*
+    the additive residual hook are all promoted upward from `ComputedDrag`
+    so external subsystems can supply them via the standard Aviary names."""
+
+    def test_all_scalers_and_residual_promoted_at_computed_drag_level(self):
+        from aviary.subsystems.aerodynamics.flops_based.computed_aero_group import (
+            ComputedDrag,
+        )
+
+        group = ComputedDrag(num_nodes=2)
+        group.setup()
+        drag_sys = group._static_subsystems_allprocs['drag'].system
+        promotes = _promoted_input_names(drag_sys)
+        for hook in (
+            Dynamic.Vehicle.DRAG_POLAR_CDF_SCALER,
+            Dynamic.Vehicle.DRAG_POLAR_CDC_SCALER,
+            Dynamic.Vehicle.DRAG_POLAR_CDP_SCALER,
+            Dynamic.Vehicle.DRAG_POLAR_CDI_SCALER,
+            Dynamic.Vehicle.DRAG_POLAR_RESIDUAL,
+        ):
+            self.assertIn(
+                hook,
+                promotes,
+                f'{hook} missing from ComputedDrag.drag promotes: {promotes!r}',
+            )
+
+
 if __name__ == '__main__':
     unittest.main()
     # test = MissionDragTest()
