@@ -2404,7 +2404,7 @@ add_meta_data(
     units='unitless',
     desc='scaling factor on fuel flow when Mach number is subsonic',
     default_value=1.0,
-    option=True,
+    option=False,
     multivalue=True,
 )
 
