@@ -73,6 +73,12 @@ class EngineScalingTest(unittest.TestCase):
         self.prob.set_val(
             Aircraft.Engine.SCALE_FACTOR, options.get_val(Aircraft.Engine.SCALE_FACTOR)
         )
+        # SUBSONIC_FUEL_FLOW_SCALER is now an input (not an option) so set it
+        # directly on the problem rather than relying on setup_model_options.
+        self.prob.set_val(
+            Aircraft.Engine.SUBSONIC_FUEL_FLOW_SCALER,
+            options.get_val(Aircraft.Engine.SUBSONIC_FUEL_FLOW_SCALER),
+        )
 
         self.prob.run_model()
 
