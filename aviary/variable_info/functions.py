@@ -587,7 +587,9 @@ def setup_model_options(
         # EngineDeck required options), so custom multiengine works
         opt_names = [
             Aircraft.Engine.Motor.DATA_FILE,
-            Aircraft.Engine.SUBSONIC_FUEL_FLOW_SCALER,
+            # SUBSONIC_FUEL_FLOW_SCALER is a connectable input (fed by a Dymos
+            # parameter), not a component option, so it is not pushed through
+            # model_options.
             Aircraft.Engine.SUPERSONIC_FUEL_FLOW_SCALER,
             Aircraft.Engine.FUEL_FLOW_SCALER_CONSTANT_TERM,
             Aircraft.Engine.FUEL_FLOW_SCALER_LINEAR_TERM,
