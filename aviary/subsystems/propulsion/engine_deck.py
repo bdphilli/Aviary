@@ -1141,7 +1141,17 @@ class EngineDeck(EngineModel):
                 num_nodes=num_nodes,
                 engine_variables=engine_outputs,
             ),
-            promotes_inputs=[Aircraft.Engine.SCALE_FACTOR, Dynamic.Atmosphere.MACH],
+            # SUBSONIC_FUEL_FLOW_SCALER must be promoted so that connections
+            # from external subsystems (e.g., design-coupled UQ wrappers
+            # driving the scaler from a DV) propagate through to the
+            # mission-phase fuel-flow computation. Otherwise the input
+            # stays at its default (1.0) regardless of what's set higher
+            # in the model hierarchy.
+            promotes_inputs=[
+                Aircraft.Engine.SCALE_FACTOR,
+                Aircraft.Engine.SUBSONIC_FUEL_FLOW_SCALER,
+                Dynamic.Atmosphere.MACH,
+            ],
             promotes_outputs=['*'],
         )
 
@@ -1187,7 +1197,18 @@ class EngineDeck(EngineModel):
                 'val': 1.0,
                 'units': 'unitless',
                 'static_target': True,
-            }
+            },
+            # Register SUBSONIC_FUEL_FLOW_SCALER as a Dymos phase parameter so
+            # the top-level value (potentially driven by an external subsystem
+            # for design-coupled UQ workflows) propagates from the model top
+            # down to every mission phase's engine_scaling component. Without
+            # this entry, each phase auto-IVCs the input to its default value
+            # (1.0) regardless of any top-level connection.
+            Aircraft.Engine.SUBSONIC_FUEL_FLOW_SCALER: {
+                'val': 1.0,
+                'units': 'unitless',
+                'static_target': True,
+            },
         }
         return params
 
