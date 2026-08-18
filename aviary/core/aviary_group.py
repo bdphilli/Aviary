@@ -1304,17 +1304,27 @@ class AviaryGroup(om.Group):
             # size the vehicle (via design GTOW) to meet a target range using all fuel
             # capacity
             if problem_type is ProblemType.SIZING:
+                # upper=900e3 lbm matches the SOLVED_2DOF and MULTI_MISSION
+                # cases. With upper=None, OpenMDAO uses 1e30 — effectively
+                # unbounded. When all the design DOFs are tied up in the
+                # mass-summation chain (e.g., wing geometry pinned via
+                # set_val so only Mission.Design/Summary.GROSS_MASS remain
+                # as scalar DVs), an unbounded gross-mass range makes the
+                # LP solving for SNOPT's multipliers degenerate — Aviary's
+                # phase linkages and mass-residual constraints get pi
+                # multipliers in the 1e10 range, which spikes the merit
+                # function at iter 1 and triggers elastic mode.
                 self.add_design_var(
                     Mission.Design.GROSS_MASS,
                     lower=10.0,
-                    upper=None,
+                    upper=900e3,
                     units='lbm',
                     ref=175e3,
                 )
                 self.add_design_var(
                     Mission.Summary.GROSS_MASS,
                     lower=10.0,
-                    upper=None,
+                    upper=900e3,
                     units='lbm',
                     ref=175e3,
                 )
@@ -1389,7 +1399,11 @@ class AviaryGroup(om.Group):
                     promotes_outputs=['gross_mass_resid'],
                 )
 
-                self.add_constraint('gross_mass_resid', lower=0)
+                # ref scales gross_mass_resid = design_mass - actual_mass to O(1).
+                # For fleet missions much lighter than design, residuals can be
+                # 10-20% of design mass. GROSS_MASS/4 puts scaled values ~0.2-0.6.
+                _gm_ref = self.aviary_inputs.get_val(Mission.Design.GROSS_MASS, 'kg') / 4.0
+                self.add_constraint('gross_mass_resid', lower=0, ref=_gm_ref)
 
             if self.mission_method is TWO_DEGREES_OF_FREEDOM:
                 # TODO: This should be moved into the problem configurator b/c it's 2DOF specific
